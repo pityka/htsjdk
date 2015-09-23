@@ -35,7 +35,6 @@ import org.testng.annotations.Test;
 
 import java.util.Arrays;
 import java.util.HashSet;
-import java.util.List;
 import java.util.Set;
 
 /**
@@ -120,32 +119,39 @@ public class SequenceUtilTest {
     }
 
     @Test(dataProvider = "mismatchCountsDataProvider")
-    public void testCountMismatches(final String readString, final String cigar, final String reference, final int expectedNumMismatches) {
+    public void testCountMismatches(final String readString, final String cigar, final String reference,
+                                    final int expectedMismatchesExact, final int expectedMismatchesAmbiguous) {
         final SAMRecord rec = new SAMRecord(null);
         rec.setReadName("test");
         rec.setReadString(readString);
         rec.setCigarString(cigar);
 
         final byte[] refBases = StringUtil.stringToBytes(reference);
-        final int n = SequenceUtil.countMismatches(rec, refBases, -1);
-        Assert.assertEquals(n, expectedNumMismatches);
+
+        final int nExact = SequenceUtil.countMismatches(rec, refBases, -1, false, false);
+        Assert.assertEquals(nExact, expectedMismatchesExact);
+
+        final int nAmbiguous = SequenceUtil.countMismatches(rec, refBases, -1, false, true);
+        Assert.assertEquals(nAmbiguous, expectedMismatchesAmbiguous);
     }
 
     @DataProvider(name="mismatchCountsDataProvider")
     public Object[][] testMakeMismatchCountsDataProvider() {
+        // note: R=A|G
         return new Object[][] {
-                {"A", "1M", "A", 0},
-                {"A", "1M", "R", 0},     // R=A|G
-                {"G", "1M", "R", 0},     // R=A|G
-                {"C", "1M", "R", 1},     // R=A|G
-                {"T", "1M", "R", 1},     // R=A|G
-                {"N", "1M", "R", 0},     // R=A|G
-                {"R", "1M", "A", 0},     // R=A|G
-                {"R", "1M", "C", 1},     // R=A|G
-                {"R", "1M", "G", 0},     // R=A|G
-                {"R", "1M", "T", 1},     // R=A|G
-                {"R", "1M", "N", 0},     // R=A|G
-                {"N", "1M", "N", 0}      // R=A|G
+                {"A", "1M", "A", 0, 0},
+                {"A", "1M", "R", 1, 0},
+                {"G", "1M", "R", 1, 0},
+                {"C", "1M", "R", 1, 1},
+                {"T", "1M", "R", 1, 1},
+                {"N", "1M", "R", 1, 1},
+                {"R", "1M", "A", 1, 1},
+                {"R", "1M", "C", 1, 1},
+                {"R", "1M", "G", 1, 1},
+                {"R", "1M", "T", 1, 1},
+                {"R", "1M", "N", 1, 0},
+                {"R", "1M", "R", 0, 0},
+                {"N", "1M", "N", 0, 0}
         };
     }
 
@@ -186,160 +192,192 @@ public class SequenceUtilTest {
         Assert.assertTrue(actualSet.equals(expectedSet));
     }
 
+    @DataProvider(name = "testBisulfiteConversionDataProvider")
+    public Object[][] testBisulfiteConversionDataProvider() {
+        // C ref -> T read on the positive strand, and G ref -> A read on the negative strand
+        return new Object[][] {
+                {'C', 'T', false, false},
+                {'C', 'A', false, false},
+                {'C', 'C', false, false},
+                {'T', 'C', true, false},
+                {'G', 'T', false, false},
+                {'G', 'A', false, false},
+                {'G', 'G', false, false},
+                {'A', 'G', false, true}
+        };
+    }
+
+    @Test(dataProvider = "testBisulfiteConversionDataProvider")
+    public void testBisulfiteConversion(final char readBase, final char refBase, final boolean posStrandExpected, final boolean negStrandExpected) {
+        final boolean posStrand = SequenceUtil.isBisulfiteConverted((byte) readBase, (byte) refBase, false);
+        Assert.assertEquals(posStrand, posStrandExpected);
+        final boolean negStrand = SequenceUtil.isBisulfiteConverted((byte) readBase, (byte) refBase, true);
+        Assert.assertEquals(negStrand, negStrandExpected);
+    }
+
     @Test(dataProvider = "basesEqualDataProvider")
-    public void testBasesEqual(final char base1, final char base2, final boolean expectedResult) {
+    public void testBasesEqual(final char base1, final char base2,
+                               final boolean expectedB1EqualsB2,
+                               final boolean expectedB1ReadMatchesB2Ref,
+                               final boolean expectedB2ReadMatchesB1Ref) {
+
         final char[] base1UcLc = new char[] { toUpperCase(base1), toLowerCase(base1) };
         final char[] base2UcLc = new char[] { toUpperCase(base2), toLowerCase(base2) };
         // Test over all permutations - uc vs uc, uc vs lc, lc vs uc, lc vs lc
         for (char theBase1 : base1UcLc) {
             for (char theBase2 : base2UcLc) {
-                // Test that order does not matter
-                boolean result = SequenceUtil.basesEqual((byte) theBase1, (byte) theBase2);
-                Assert.assertEquals(result, expectedResult, "basesEqual test failed for '" + theBase1 + "' vs. '" + theBase2 + "'");
+                // for equality, order should not matter
+                final boolean b1EqualsB2 = SequenceUtil.basesEqual((byte) theBase1, (byte) theBase2);
+                Assert.assertEquals(b1EqualsB2, expectedB1EqualsB2, "basesEqual test failed for '" + theBase1 + "' vs. '" + theBase2 + "'");
+                final boolean b2EqualsB1 = SequenceUtil.basesEqual((byte) theBase2, (byte) theBase1);
+                Assert.assertEquals(b2EqualsB1, expectedB1EqualsB2, "basesEqual test failed for '" + theBase1 + "' vs. '" + theBase2 + "'");
 
-                result = SequenceUtil.basesEqual((byte) theBase2, (byte) theBase1);
-                Assert.assertEquals(result, expectedResult, "basesEqual test failed for '" + theBase2 + "' vs. '" + theBase1 + "'");
+                // for ambiguous read/ref matching, the order does matter
+                final boolean b1ReadMatchesB2Ref = SequenceUtil.basesMatchWithAmbiguity((byte) theBase1, (byte) theBase2);
+                Assert.assertEquals(b1ReadMatchesB2Ref, expectedB1ReadMatchesB2Ref, "basesMatchWithAmbiguity test failed for '" + theBase1 + "' vs. '" + theBase2 + "'");
+                final boolean b2ReadMatchesB1Ref = SequenceUtil.basesMatchWithAmbiguity((byte) theBase2, (byte) theBase1);
+                Assert.assertEquals(b2ReadMatchesB1Ref, expectedB2ReadMatchesB1Ref, "basesMatchWithAmbiguity test failed for '" + theBase1 + "' vs. '" + theBase2 + "'");
             }
         }
     }
 
+    /*
+     * For reference:
+     * M = A|C
+     * R = A|G
+     * W = A|T
+     * S = C|G
+     * Y = C|T
+     * K = G|T
+     * V = A|C|G
+     * H = A|C|T
+     * D = A|G|T
+     * B = C|G|T
+     * N = A|C|G|T
+     */
     @DataProvider(name="basesEqualDataProvider")
     public Object[][] testBasesEqualDataProvider() {
         return new Object[][] {
-                {'A', 'A', true},
-                {'A', 'C', false},
-                {'A', 'G', false},
-                {'A', 'T', false},
-                {'A', 'M', true},       // M = A|C
-                {'A', 'R', true},       // R = A|G
-                {'A', 'W', true},       // W = A|T
-                {'A', 'S', false},      // S = C|G
-                {'A', 'Y', false},      // Y = C|T
-                {'A', 'K', false},      // K = G|T
-                {'A', 'V', true},      // V = A|C|G
-                {'A', 'H', true},      // H = A|C|T
-                {'A', 'D', true},      // D = A|G|T
-                {'A', 'B', false},      // B = C|G|T
-                {'A', 'N', true},      // N = A|C|G|T
-
-                {'C', 'C', true},
-                {'C', 'G', false},
-                {'C', 'T', false},
-                {'C', 'M', true},       // M = A|C
-                {'C', 'R', false},       // R = A|G
-                {'C', 'W', false},       // W = A|T
-                {'C', 'S', true},      // S = C|G
-                {'C', 'Y', true},      // Y = C|T
-                {'C', 'K', false},      // K = G|T
-                {'C', 'V', true},      // V = A|C|G
-                {'C', 'H', true},      // H = A|C|T
-                {'C', 'D', false},      // D = A|G|T
-                {'C', 'B', true},      // B = C|G|T
-                {'C', 'N', true},      // N = A|C|G|T
-
-                {'G', 'G', true},
-                {'G', 'T', false},
-                {'G', 'M', false},       // M = A|C
-                {'G', 'R', true},       // R = A|G
-                {'G', 'W', false},       // W = A|T
-                {'G', 'S', true},      // S = C|G
-                {'G', 'Y', false},      // Y = C|T
-                {'G', 'K', true},      // K = G|T
-                {'G', 'V', true},      // V = A|C|G
-                {'G', 'H', false},      // H = A|C|T
-                {'G', 'D', true},      // D = A|G|T
-                {'G', 'B', true},      // B = C|G|T
-                {'G', 'N', true},      // N = A|C|G|T
-
-                {'T', 'T', true},
-                {'T', 'M', false},       // M = A|C
-                {'T', 'R', false},       // R = A|G
-                {'T', 'W', true},       // W = A|T
-                {'T', 'S', false},      // S = C|G
-                {'T', 'Y', true},      // Y = C|T
-                {'T', 'K', true},      // K = G|T
-                {'T', 'V', false},      // V = A|C|G
-                {'T', 'H', true},      // H = A|C|T
-                {'T', 'D', true},      // D = A|G|T
-                {'T', 'B', true},      // B = C|G|T
-                {'T', 'N', true},      // N = A|C|G|T
-
-                {'M', 'M', true},       // M = A|C
-                {'M', 'R', true},       // R = A|G
-                {'M', 'W', true},       // W = A|T
-                {'M', 'S', true},      // S = C|G
-                {'M', 'Y', true},      // Y = C|T
-                {'M', 'K', false},      // K = G|T
-                {'M', 'V', true},      // V = A|C|G
-                {'M', 'H', true},      // H = A|C|T
-                {'M', 'D', true},      // D = A|G|T
-                {'M', 'B', true},      // B = C|G|T
-                {'M', 'N', true},      // N = A|C|G|T
-
-                {'R', 'R', true},       // R = A|G
-                {'R', 'W', true},       // W = A|T
-                {'R', 'S', true},      // S = C|G
-                {'R', 'Y', false},      // Y = C|T
-                {'R', 'K', true},      // K = G|T
-                {'R', 'V', true},      // V = A|C|G
-                {'R', 'H', true},      // H = A|C|T
-                {'R', 'D', true},      // D = A|G|T
-                {'R', 'B', true},      // B = C|G|T
-                {'R', 'N', true},      // N = A|C|G|T
-
-                {'W', 'W', true},       // W = A|T
-                {'W', 'S', false},      // S = C|G
-                {'W', 'Y', true},      // Y = C|T
-                {'W', 'K', true},      // K = G|T
-                {'W', 'V', true},      // V = A|C|G
-                {'W', 'H', true},      // H = A|C|T
-                {'W', 'D', true},      // D = A|G|T
-                {'W', 'B', true},      // B = C|G|T
-                {'W', 'N', true},      // N = A|C|G|T
-
-                {'S', 'S', true},      // S = C|G
-                {'S', 'Y', true},      // Y = C|T
-                {'S', 'K', true},      // K = G|T
-                {'S', 'V', true},      // V = A|C|G
-                {'S', 'H', true},      // H = A|C|T
-                {'S', 'D', true},      // D = A|G|T
-                {'S', 'B', true},      // B = C|G|T
-                {'S', 'N', true},      // N = A|C|G|T
-
-                {'Y', 'Y', true},      // Y = C|T
-                {'Y', 'K', true},      // K = G|T
-                {'Y', 'V', true},      // V = A|C|G
-                {'Y', 'H', true},      // H = A|C|T
-                {'Y', 'D', true},      // D = A|G|T
-                {'Y', 'B', true},      // B = C|G|T
-                {'Y', 'N', true},      // N = A|C|G|T
-
-                {'K', 'K', true},      // K = G|T
-                {'K', 'V', true},      // V = A|C|G
-                {'K', 'H', true},      // H = A|C|T
-                {'K', 'D', true},      // D = A|G|T
-                {'K', 'B', true},      // B = C|G|T
-                {'K', 'N', true},      // N = A|C|G|T
-
-                {'V', 'V', true},      // V = A|C|G
-                {'V', 'H', true},      // H = A|C|T
-                {'V', 'D', true},      // D = A|G|T
-                {'V', 'B', true},      // B = C|G|T
-                {'V', 'N', true},      // N = A|C|G|T
-
-                {'H', 'H', true},      // H = A|C|T
-                {'H', 'D', true},      // D = A|G|T
-                {'H', 'B', true},      // B = C|G|T
-                {'H', 'N', true},      // N = A|C|G|T
-
-                {'D', 'D', true},      // D = A|G|T
-                {'D', 'B', true},      // B = C|G|T
-                {'D', 'N', true},      // N = A|C|G|T
-
-                {'B', 'B', true},      // B = C|G|T
-                {'B', 'N', true},      // N = A|C|G|T
-
-                {'N', 'n', true}
+                {'A', 'A', true, true, true},
+                {'A', 'C', false, false, false},
+                {'A', 'G', false, false, false},
+                {'A', 'T', false, false, false},
+                {'A', 'M', false, true, false},
+                {'A', 'R', false, true, false},
+                {'A', 'W', false, true, false},
+                {'A', 'S', false, false, false},
+                {'A', 'Y', false, false, false},
+                {'A', 'K', false, false, false},
+                {'A', 'V', false, true, false},
+                {'A', 'H', false, true, false},
+                {'A', 'D', false, true, false},
+                {'A', 'B', false, false, false},
+                {'A', 'N', false, true, false},
+                {'C', 'C', true, true, true},
+                {'C', 'G', false, false, false},
+                {'C', 'T', false, false, false},
+                {'C', 'M', false, true, false},
+                {'C', 'R', false, false, false},
+                {'C', 'W', false, false, false},
+                {'C', 'S', false, true, false},
+                {'C', 'Y', false, true, false},
+                {'C', 'K', false, false, false},
+                {'C', 'V', false, true, false},
+                {'C', 'H', false, true, false},
+                {'C', 'D', false, false, false},
+                {'C', 'N', false, true, false},
+                {'G', 'G', true, true, true},
+                {'G', 'T', false, false, false},
+                {'G', 'M', false, false, false},
+                {'G', 'R', false, true, false},
+                {'G', 'W', false, false, false},
+                {'G', 'S', false, true, false},
+                {'G', 'Y', false, false, false},
+                {'G', 'K', false, true, false},
+                {'G', 'V', false, true, false},
+                {'G', 'H', false, false, false},
+                {'G', 'N', false, true, false},
+                {'T', 'T', true, true, true},
+                {'T', 'W', false, true, false},
+                {'T', 'Y', false, true, false},
+                {'T', 'V', false, false, false},
+                {'M', 'T', false, false, false},
+                {'M', 'M', true, true, true},
+                {'M', 'R', false, false, false},
+                {'M', 'W', false, false, false},
+                {'M', 'S', false, false, false},
+                {'M', 'Y', false, false, false},
+                {'M', 'V', false, true, false},
+                {'M', 'N', false, true, false},
+                {'R', 'T', false, false, false},
+                {'R', 'R', true, true, true},
+                {'R', 'W', false, false, false},
+                {'R', 'S', false, false, false},
+                {'R', 'Y', false, false, false},
+                {'R', 'V', false, true, false},
+                {'W', 'W', true, true, true},
+                {'W', 'Y', false, false, false},
+                {'S', 'T', false, false, false},
+                {'S', 'W', false, false, false},
+                {'S', 'S', true, true, true},
+                {'S', 'Y', false, false, false},
+                {'S', 'V', false, true, false},
+                {'Y', 'Y', true, true, true},
+                {'K', 'T', false, false, true},
+                {'K', 'M', false, false, false},
+                {'K', 'R', false, false, false},
+                {'K', 'W', false, false, false},
+                {'K', 'S', false, false, false},
+                {'K', 'Y', false, false, false},
+                {'K', 'K', true, true, true},
+                {'K', 'V', false, false, false},
+                {'K', 'N', false, true, false},
+                {'V', 'W', false, false, false},
+                {'V', 'Y', false, false, false},
+                {'V', 'V', true, true, true},
+                {'H', 'T', false, false, true},
+                {'H', 'M', false, false, true},
+                {'H', 'R', false, false, false},
+                {'H', 'W', false, false, true},
+                {'H', 'S', false, false, false},
+                {'H', 'Y', false, false, true},
+                {'H', 'K', false, false, false},
+                {'H', 'V', false, false, false},
+                {'H', 'H', true, true, true},
+                {'H', 'N', false, true, false},
+                {'D', 'G', false, false, true},
+                {'D', 'T', false, false, true},
+                {'D', 'M', false, false, false},
+                {'D', 'R', false, false, true},
+                {'D', 'W', false, false, true},
+                {'D', 'S', false, false, false},
+                {'D', 'Y', false, false, false},
+                {'D', 'K', false, false, true},
+                {'D', 'V', false, false, false},
+                {'D', 'H', false, false, false},
+                {'D', 'D', true, true, true},
+                {'D', 'N', false, true, false},
+                {'B', 'C', false, false, true},
+                {'B', 'G', false, false, true},
+                {'B', 'T', false, false, true},
+                {'B', 'M', false, false, false},
+                {'B', 'R', false, false, false},
+                {'B', 'W', false, false, false},
+                {'B', 'S', false, false, true},
+                {'B', 'Y', false, false, true},
+                {'B', 'K', false, false, true},
+                {'B', 'V', false, false, false},
+                {'B', 'H', false, false, false},
+                {'B', 'D', false, false, false},
+                {'B', 'B', true, true, true},
+                {'B', 'N', false, true, false},
+                {'N', 'T', false, false, true},
+                {'N', 'R', false, false, true},
+                {'N', 'W', false, false, true},
+                {'N', 'S', false, false, true},
+                {'N', 'Y', false, false, true},
+                {'N', 'V', false, false, true},
+                {'N', 'N', true, true, true}
         };
     }
 

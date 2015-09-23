@@ -57,6 +57,10 @@ public class SequenceUtil {
 
     private static final byte[] bases = new byte[127];
 
+    /*
+     * Definition of IUPAC codes:
+     * http://www.bioinformatics.org/sms2/iupac.html
+     */
     static {
         Arrays.fill(bases, (byte) 0);
         bases[A] = A_MASK;
@@ -95,11 +99,27 @@ public class SequenceUtil {
         return htsjdk.samtools.util.StringUtil.bytesToString(bases);
     }
 
+
     /**
-     * Attempts to efficiently compare two bases stored as bytes for equality.
+     * Efficiently compare two IUPAC base codes, simply returning true if they are equal (ignoring case),
+     * without considering the set relationships between ambiguous codes.
      */
-    public static boolean basesEqual(byte lhs, byte rhs) {
-        return (bases[lhs] & bases[rhs]) > 0;
+    public static boolean basesEqual(final byte lhs, final byte rhs) {
+        return (bases[lhs] == bases[rhs]);
+    }
+
+    /**
+     * Efficiently compare two IUPAC base codes, one coming from a read sequence and the other coming from
+     * a reference sequence, using the reference code as a 'pattern' that the read base must match.
+     *
+     * We take ambiguous codes into account, returning true if the set of possible bases
+     * represented by the read value is a (non-strict) subset of the possible bases represented
+     * by the reference value.
+     *
+     * Since the comparison is directional, make sure to pass read / ref codes in correct order.
+     */
+    public static boolean basesMatchWithAmbiguity(final byte readBase, final byte refBase) {
+        return (bases[readBase] & bases[refBase]) == bases[readBase];
     }
 
     /**
@@ -296,6 +316,20 @@ public class SequenceUtil {
         return Integer.toString(clipLength) + "S";
     }
 
+    /**
+     * Helper method to handle the various use cases of base comparison.
+     */
+    private static boolean basesMatch(final byte readBase, final byte refBase, final boolean negativeStrand,
+                                      final boolean bisulfiteSequence, final boolean matchAmbiguous) {
+        if (bisulfiteSequence) {
+            if (matchAmbiguous) return bisulfiteBasesMatchWithAmbiguity(negativeStrand, readBase, refBase);
+            else return bisulfiteBasesEqual(negativeStrand, readBase, refBase);
+        } else {
+            if (matchAmbiguous) return basesMatchWithAmbiguity(readBase, refBase);
+            else return basesEqual(readBase, refBase);
+        }
+    }
+
     /** Calculates the number of mismatches between the read and the reference sequence provided. */
     public static int countMismatches(final SAMRecord read, final byte[] referenceBases) {
         return countMismatches(read, referenceBases, 0, false);
@@ -317,8 +351,12 @@ public class SequenceUtil {
      *                          and C->T on the positive strand and G->A on the negative strand will not be counted
      *                          as mismatches.
      */
+    public static int countMismatches(final SAMRecord read, final byte[] referenceBases, final int referenceOffset, final boolean bisulfiteSequence) {
+        return countMismatches(read, referenceBases, referenceOffset, bisulfiteSequence, false);
+    }
+
     public static int countMismatches(final SAMRecord read, final byte[] referenceBases, final int referenceOffset,
-                                      final boolean bisulfiteSequence) {
+                                      final boolean bisulfiteSequence, final boolean matchAmbiguous) {
         try {
             int mismatches = 0;
 
@@ -330,15 +368,9 @@ public class SequenceUtil {
                 final int length = block.getLength();
 
                 for (int i = 0; i < length; ++i) {
-                    if (!bisulfiteSequence) {
-                        if (!basesEqual(readBases[readBlockStart + i], referenceBases[referenceBlockStart + i])) {
-                            ++mismatches;
-                        }
-                    } else {
-                        if (!bisulfiteBasesEqual(read.getReadNegativeStrandFlag(), readBases[readBlockStart + i],
-                                referenceBases[referenceBlockStart + i])) {
-                            ++mismatches;
-                        }
+                    if (!basesMatch(readBases[readBlockStart + i], referenceBases[referenceBlockStart + i],
+                            read.getReadNegativeStrandFlag(), bisulfiteSequence, matchAmbiguous)) {
+                        ++mismatches;
                     }
                 }
             }
@@ -517,16 +549,18 @@ public class SequenceUtil {
     }
 
     /**
-     * Calculates the for the predefined NM tag from the SAM spec. To the result of
-     * countMismatches() it adds 1 for each indel.
+     * Calculates the predefined NM tag from the SAM spec: (# of mismatches + # of indels)
+     * For the purposes for calculating mismatches, we support IUPAC ambiguous codes
+     * (see <code>basesMatchWithAmbiguity</code> method).
      */
     public static int calculateSamNmTag(final SAMRecord read, final byte[] referenceBases) {
         return calculateSamNmTag(read, referenceBases, 0, false);
     }
 
     /**
-     * Calculates the for the predefined NM tag from the SAM spec. To the result of
-     * countMismatches() it adds 1 for each indel.
+     * Calculates the predefined NM tag from the SAM spec: (# of mismatches + # of indels)
+     * For the purposes for calculating mismatches, we support IUPAC ambiguous codes
+     * (see <code>basesMatchWithAmbiguity</code> method).
      *
      * @param referenceOffset 0-based offset of the first element of referenceBases relative to the start
      *                        of that reference sequence.
@@ -537,8 +571,9 @@ public class SequenceUtil {
     }
 
     /**
-     * Calculates the for the predefined NM tag from the SAM spec. To the result of
-     * countMismatches() it adds 1 for each indel.
+     * Calculates the predefined NM tag from the SAM spec: (# of mismatches + # of indels)
+     * For the purposes for calculating mismatches, we support IUPAC ambiguous codes
+     * (see <code>basesMatchWithAmbiguity</code> method).
      *
      * @param referenceOffset   0-based offset of the first element of referenceBases relative to the start
      *                          of that reference sequence.
@@ -548,7 +583,7 @@ public class SequenceUtil {
      */
     public static int calculateSamNmTag(final SAMRecord read, final byte[] referenceBases,
                                         final int referenceOffset, final boolean bisulfiteSequence) {
-        int samNm = countMismatches(read, referenceBases, referenceOffset, bisulfiteSequence);
+        int samNm = countMismatches(read, referenceBases, referenceOffset, bisulfiteSequence, true);
         for (final CigarElement el : read.getCigar().getCigarElements()) {
             if (el.getOperator() == CigarOperator.INSERTION || el.getOperator() == CigarOperator.DELETION) {
                 samNm += el.getLength();
@@ -558,7 +593,7 @@ public class SequenceUtil {
     }
 
     /**
-     * Attempts to calculate the for the predefined NM tag from the SAM spec using the cigar string alone.
+     * Attempts to calculate the predefined NM tag from the SAM spec using the cigar string alone.
      * It may calculate incorrectly if ambiguous operators (Like M) are used.
      *
      * Needed for testing infrastructure: SAMRecordSetBuilder
@@ -647,9 +682,9 @@ public class SequenceUtil {
     }
 
     /**
-     * Returns true if the bases are equal OR if the mismatch cannot be accounted for by
-     * bisfulite treatment.  C->T on the positive strand and G->A on the negative strand
-     * do not count as mismatches
+     * Returns true if the bases are equal OR if the mismatch can be accounted for by
+     * bisulfite treatment. C->T on the positive strand and G->A on the negative strand
+     * do not count as mismatches.
      */
     public static boolean bisulfiteBasesEqual(final boolean negativeStrand, final byte read, final byte reference) {
         return (basesEqual(read, reference)) || (isBisulfiteConverted(read, reference, negativeStrand));
@@ -657,6 +692,15 @@ public class SequenceUtil {
 
     public static boolean bisulfiteBasesEqual(final byte read, final byte reference) {
         return bisulfiteBasesEqual(false, read, reference);
+    }
+
+    /**
+     * Same as above, but use <code>basesMatchWithAmbiguity</code> instead of <code>basesEqual</code>.
+     * Note that <code>isBisulfiteConverted</code> is not affected because it only applies when the
+     * reference base is non-ambiguous.
+     */
+    public static boolean bisulfiteBasesMatchWithAmbiguity(final boolean negativeStrand, final byte read, final byte reference) {
+        return (basesMatchWithAmbiguity(read, reference)) || (isBisulfiteConverted(read, reference, negativeStrand));
     }
 
     /**
@@ -878,7 +922,10 @@ public class SequenceUtil {
     }
 
     /**
-     * A rip off samtools bam_md.c
+     * Calculate MD and NM similarly to Samtools, except that N->N is a match.
+     *
+     * TODO this calculates NM differently than calculateSamNmTag
+     * TODO (specifically, it does not check set relationships between ambiguous bases.
      *
      * @param record
      * @param ref
