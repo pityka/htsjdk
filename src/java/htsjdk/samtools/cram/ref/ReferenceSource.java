@@ -100,6 +100,16 @@ public class ReferenceSource {
 
         { // try to fetch sequence by name:
             bases = findBasesByName(record.getSequenceName(), tryNameVariants);
+
+
+            if (bases == null) {
+                // try to fetch sequence by md5 from rsFile
+                String nameByMD5 = findNameByMD5(md5);
+                if (nameByMD5 != null) {
+                    bases = findBasesByName(nameByMD5, tryNameVariants);
+                }
+            }
+
             if (bases != null) {
                 SequenceUtil.upperCase(bases);
                 cacheW.put(record.getSequenceName(), new WeakReference<byte[]>(
@@ -109,7 +119,7 @@ public class ReferenceSource {
         }
 
         {
-            if (Defaults.USE_CRAM_REF_DOWNLOAD) { // try to fetch sequence by md5:
+            if (Defaults.USE_CRAM_REF_DOWNLOAD) { // try to download sequence by md5:
                 if (md5 != null) {
                     try {
                         bases = findBasesByMD5(md5.toLowerCase());
@@ -127,6 +137,19 @@ public class ReferenceSource {
 
         // sequence not found, give up:
         return null;
+    }
+
+    String findNameByMD5(String md5) {
+        if (rsFile == null) return null;
+
+        String name = null;
+        for (SAMSequenceRecord sd  : rsFile.getSequenceDictionary().getSequences()) {
+            if (sd.getAttribute(SAMSequenceRecord.MD5_TAG).equals(md5) || sd.getAttribute(SAMSequenceRecord.MD5_TAG).equals(md5.toLowerCase()) || sd.getAttribute(SAMSequenceRecord.MD5_TAG).equals(md5.toUpperCase())) {
+                name = sd.getSequenceName();
+                break;
+            }
+        }
+        return name;
     }
 
     byte[] findBasesByName(final String name, final boolean tryVariants) {
