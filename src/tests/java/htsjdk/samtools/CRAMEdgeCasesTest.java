@@ -58,6 +58,23 @@ public class CRAMEdgeCasesTest {
         if (!sawException) {Assert.fail("Expected an exception to occur, none found");}
     }
 
+    // int test for CRAMException
+    // testing for a contig found in the reads but, but it is present in the reference only with a matching md5 and not by matching names
+    @Test
+    public void testContigInRefWithMD5() throws IOException {
+        boolean sawException = false;
+        final File CRAMFile = new File("testdata/htsjdk/samtools/cram/CRAMException/testContigNotInRef.cram");
+        final File refFile = new File("testdata/htsjdk/samtools/cram/CRAMException/testContigInRefWithMD5.fa");
+        final ReferenceSource refSource = new ReferenceSource(refFile);
+        final CRAMIterator iterator = new CRAMIterator(new FileInputStream(CRAMFile), refSource);
+        
+        while (iterator.hasNext()) {
+            iterator.next();
+        }
+        
+       // I expect no exception, an exception should cause this test to fail.
+    }
+
     @Test
     public void testBizilionTags() throws IOException {
         final SAMRecordSetBuilder builder = new SAMRecordSetBuilder();
